@@ -13,18 +13,39 @@ MCP server that provides integration with BetterTouchTool, allowing LLMs like Cl
 
 [See btt_mcp_bridge/README.md for detailed documentation](btt_mcp_bridge/README.md)
 
+### Obsidian Thoughts Assistant (`obsidian_thoughts_mcp`)
+
+MCP server for semantic search and interaction with your Obsidian thoughts collection:
+- Semantic search through thoughts using AI embeddings
+- Create new AI-generated notes in your Obsidian vault
+- Compare thoughts and analyze connections
+- Manage spaced repetition cards and decks
+- List recent thoughts and get collection statistics
+
+**Requires**: Ollama running locally for embeddings generation
+
+[See obsidian_thoughts_mcp/README.md for detailed documentation](obsidian_thoughts_mcp/README.md)
+
 ## Project Structure
 
 ```
 MCP_Servers/
-├── README.md                    # This file
-├── btt_mcp_bridge/             # BetterTouchTool MCP Bridge
-│   ├── simplified_direct_runner.py  # Main entry point for MCP
-│   ├── simplified_smart_bridge.py   # Simplified bridge implementation
-│   ├── smart_btt_bridge.py          # Full bridge implementation
-│   ├── requirements.txt             # Python dependencies
-│   └── ...                          # Additional files
-└── .gitignore                   # Git ignore rules
+├── README.md                           # This file
+├── btt_mcp_bridge/                    # BetterTouchTool MCP Bridge
+│   ├── simplified_direct_runner.py   # Main entry point for MCP
+│   ├── simplified_smart_bridge.py    # Simplified bridge implementation
+│   ├── smart_btt_bridge.py           # Full bridge implementation
+│   ├── requirements.txt              # Python dependencies
+│   └── ...                           # Additional files
+├── obsidian_thoughts_mcp/            # Obsidian Thoughts Assistant
+│   ├── mcp_server.py                 # Main MCP server
+│   ├── build_embeddings.py           # Embeddings generation
+│   ├── search_thoughts.py            # Search functionality
+│   ├── thought_embeddings.csv        # Content embeddings (~6MB)
+│   ├── title_embeddings.csv          # Title embeddings (~6MB)
+│   ├── requirements.txt              # Python dependencies
+│   └── ...                           # Additional files
+└── .gitignore                         # Git ignore rules
 ```
 
 ## Installation
@@ -32,8 +53,16 @@ MCP_Servers/
 Each MCP server has its own dependencies. Navigate to the specific server directory and install:
 
 ```bash
+# For BetterTouchTool Bridge
 cd btt_mcp_bridge
 uv pip install -r requirements.txt
+
+# For Obsidian Thoughts Assistant
+cd obsidian_thoughts_mcp
+pip install -r requirements.txt
+pip install mcp[cli]
+# Then build embeddings (requires Ollama running)
+./build_embeddings_cli.py
 ```
 
 Or with pip:
@@ -49,7 +78,7 @@ Add servers to your Claude Desktop configuration at:
 ~/Library/Application Support/Claude/claude_desktop_config.json
 ```
 
-Example configuration for BTT Bridge:
+Example configuration:
 
 ```json
 {
@@ -62,7 +91,18 @@ Example configuration for BTT Bridge:
         "fastmcp",
         "fastmcp",
         "run",
-        "/Users/YOUR_USERNAME/Desktop/Home/Source/MCP_Servers/btt_mcp_bridge/simplified_direct_runner.py"
+        "/Users/YOUR_USERNAME/Source/MCP_Servers/btt_mcp_bridge/simplified_direct_runner.py"
+      ]
+    },
+    "thoughts-assistant": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": [
+        "run",
+        "--with",
+        "mcp[cli]",
+        "mcp",
+        "run",
+        "/Users/YOUR_USERNAME/Source/MCP_Servers/obsidian_thoughts_mcp/mcp_server.py"
       ]
     }
   }
