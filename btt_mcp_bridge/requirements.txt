@@ -1,0 +1,4 @@
+fastmcp==2.5.1     # the reference MCP server framework 
+pydantic>=2,<3
+pytest>=8
+python-dotenv
