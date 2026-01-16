@@ -96,6 +96,13 @@ VAULT_ROOT = Path(THOUGHTS_DIR).resolve().parent
 mcp = FastMCP("Thoughts Assistant")
 
 # ----------------------------------------------------------------------
+# Conversation tracking (for saving chats to Obsidian)
+# ----------------------------------------------------------------------
+
+# Module-level storage for conversation messages
+conversation_messages: List[Dict[str, Any]] = []
+
+# ----------------------------------------------------------------------
 # Helper functions
 # ----------------------------------------------------------------------
 
@@ -1673,6 +1680,280 @@ keyword_search("specific phrase", max_results=5, case_sensitive=False)
 ```
 """
     return help_text
+
+
+# ----------------------------------------------------------------------
+# Conversation tracking tools
+# ----------------------------------------------------------------------
+
+@mcp.tool()
+def store_message(message: str, from_user: bool, ctx: Context = None) -> Dict[str, Any]:
+    """
+    Store a chat message for later export to Obsidian.
+
+    This tool should be called after each message in the conversation
+    to build up a record that can later be saved to Obsidian.
+
+    Args:
+        message: The text content of the message
+        from_user: True if the message is from the user, False if from the assistant
+
+    Returns:
+        Dictionary with status and message count
+    """
+    global conversation_messages
+
+    if ctx:
+        ctx.info(f"Storing {'user' if from_user else 'assistant'} message")
+
+    conversation_messages.append({
+        "text": message,
+        "from_user": from_user,
+        "timestamp": datetime.datetime.now().isoformat()
+    })
+
+    logger.debug(f"Stored message. Total messages: {len(conversation_messages)}")
+
+    return {
+        "status": "success",
+        "message": "Message stored",
+        "message_count": len(conversation_messages)
+    }
+
+
+def _generate_uuid() -> str:
+    """Generate a UUID v4 string."""
+    import uuid
+    return str(uuid.uuid4())
+
+
+def _load_conversations_data(conversations_file: Path) -> Dict[str, Any]:
+    """Load existing conversations data from file."""
+    if conversations_file.exists():
+        try:
+            with open(conversations_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Could not load conversations file: {e}")
+
+    # Return empty structure if file doesn't exist or is invalid
+    return {
+        "conversations": {},
+        "metadata": {
+            "lastUpdated": 0,
+            "totalCount": 0
+        }
+    }
+
+
+def _save_conversations_data(conversations_file: Path, data: Dict[str, Any]) -> None:
+    """Save conversations data to file."""
+    # Ensure parent directory exists
+    conversations_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(conversations_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def save_conversation_to_obsidian(
+    title: str,
+    linked_notes: List[str] = None,
+    folder_path: str = None,
+    ctx: Context = None
+) -> Dict[str, Any]:
+    """
+    Save the current conversation to Obsidian as a proper chat object.
+
+    This saves all messages that have been stored via store_message
+    to the conversations.json file in the format expected by the
+    Obsidian chat integration plugin.
+
+    Args:
+        title: The title for the conversation
+        linked_notes: Optional list of note titles that were referenced in the conversation
+        folder_path: Optional folder path within vault (defaults to '2 - Chats')
+
+    Returns:
+        Dictionary with conversation ID and status information
+    """
+    global conversation_messages
+
+    if ctx:
+        ctx.info(f"Saving conversation with {len(conversation_messages)} messages to Obsidian")
+
+    logger.info(f"Saving conversation '{title}' with {len(conversation_messages)} messages")
+
+    if not conversation_messages:
+        return {
+            "status": "error",
+            "message": "No messages to save. Use store_message to capture messages first."
+        }
+
+    try:
+        # Determine save folder
+        save_folder = folder_path if folder_path else "2 - Chats"
+        conversations_file = VAULT_ROOT / save_folder / "conversations.json"
+
+        # Generate conversation ID
+        conversation_id = _generate_uuid()
+
+        # Build the tree structure
+        # Start with virtual root
+        root_id = "virtual-root"
+        nodes: Dict[str, Dict[str, Any]] = {
+            root_id: {
+                "id": root_id,
+                "role": "assistant",
+                "content": "",
+                "timestamp": int(time.time() * 1000),
+                "parentId": None,
+                "children": []
+            }
+        }
+
+        current_path: List[str] = []
+        previous_id = root_id
+
+        # Convert stored messages to MessageNode format
+        for msg in conversation_messages:
+            msg_id = _generate_uuid()
+
+            # Parse timestamp if it's a string, otherwise use current time
+            if isinstance(msg.get("timestamp"), str):
+                try:
+                    dt = datetime.datetime.fromisoformat(msg["timestamp"])
+                    timestamp = int(dt.timestamp() * 1000)
+                except ValueError:
+                    timestamp = int(time.time() * 1000)
+            else:
+                timestamp = int(time.time() * 1000)
+
+            node = {
+                "id": msg_id,
+                "role": "user" if msg["from_user"] else "assistant",
+                "content": msg["text"],
+                "timestamp": timestamp,
+                "parentId": previous_id,
+                "children": []
+            }
+
+            # Add this node as a child of the previous node
+            nodes[previous_id]["children"].append(msg_id)
+            nodes[msg_id] = node
+            current_path.append(msg_id)
+            previous_id = msg_id
+
+        # Create the SavedConversation object
+        now = int(time.time() * 1000)
+        saved_conversation = {
+            "id": conversation_id,
+            "title": title,
+            "created": now,
+            "modified": now,
+            "metadata": {
+                "totalMessages": len(conversation_messages),
+                "branches": 1,  # Linear conversation, no branches
+                "noteContextUsed": linked_notes if linked_notes else []
+            },
+            "tree": {
+                "nodes": nodes,
+                "currentPath": current_path,
+                "rootId": root_id
+            }
+        }
+
+        # Load existing conversations and add this one
+        conversations_data = _load_conversations_data(conversations_file)
+        conversations_data["conversations"][conversation_id] = saved_conversation
+        conversations_data["metadata"]["lastUpdated"] = now
+        conversations_data["metadata"]["totalCount"] = len(conversations_data["conversations"])
+
+        # Save back to file
+        _save_conversations_data(conversations_file, conversations_data)
+
+        # Clear the conversation messages after successful save
+        saved_count = len(conversation_messages)
+        conversation_messages = []
+
+        logger.info(f"Successfully saved conversation '{title}' with ID {conversation_id}")
+
+        return {
+            "status": "success",
+            "conversation_id": conversation_id,
+            "title": title,
+            "messages_saved": saved_count,
+            "file_path": str(conversations_file),
+            "message": f"Conversation saved successfully with {saved_count} messages"
+        }
+
+    except Exception as e:
+        error_msg = f"Error saving conversation: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return {
+            "status": "error",
+            "message": error_msg
+        }
+
+
+@mcp.tool()
+def clear_conversation_buffer(ctx: Context = None) -> Dict[str, Any]:
+    """
+    Clear the conversation message buffer without saving.
+
+    Use this if you want to start tracking a new conversation
+    without saving the current one.
+
+    Returns:
+        Dictionary with status and cleared message count
+    """
+    global conversation_messages
+
+    if ctx:
+        ctx.info("Clearing conversation buffer")
+
+    cleared_count = len(conversation_messages)
+    conversation_messages = []
+
+    logger.info(f"Cleared {cleared_count} messages from buffer")
+
+    return {
+        "status": "success",
+        "message": f"Cleared {cleared_count} messages from buffer",
+        "cleared_count": cleared_count
+    }
+
+
+@mcp.tool()
+def get_conversation_status(ctx: Context = None) -> Dict[str, Any]:
+    """
+    Get the current status of the conversation buffer.
+
+    Returns:
+        Dictionary with message count and preview
+    """
+    if ctx:
+        ctx.info("Getting conversation buffer status")
+
+    if not conversation_messages:
+        return {
+            "status": "empty",
+            "message_count": 0,
+            "message": "No messages in buffer"
+        }
+
+    # Get a preview of the first and last messages
+    first_msg = conversation_messages[0]
+    last_msg = conversation_messages[-1]
+
+    return {
+        "status": "active",
+        "message_count": len(conversation_messages),
+        "first_message_preview": first_msg["text"][:100] + "..." if len(first_msg["text"]) > 100 else first_msg["text"],
+        "last_message_preview": last_msg["text"][:100] + "..." if len(last_msg["text"]) > 100 else last_msg["text"],
+        "first_timestamp": first_msg.get("timestamp"),
+        "last_timestamp": last_msg.get("timestamp")
+    }
 
 
 # ----------------------------------------------------------------------
